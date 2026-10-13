@@ -1974,6 +1974,10 @@
     "inactiveFieldCopied": "已复制",
     "upstreamFormatCopilotRouteHint": "所有模式都需要开启路由，由路由注入 Copilot 账号凭据；手动指定的协议模型不支持时会报错。",
     "maxOutputTokensWarning": "不要超过模型或网关的真实输出上限，否则会返回 400。",
+    "modelOverrideTitle": "将实际请求模型写入 model 覆盖",
+    "modelOverrideHelp": "勾选后，发给上游的请求体里 model 会被写成模型映射第一行的实际请求模型：{{model}}。仅对走本地代理（非 Copilot）的请求生效。",
+    "modelOverrideNone": "（未填写）",
+    "modelOverrideEmptyHint": "请先在上方模型列表填写第一行的实际请求模型。",
     "routeOnlySettingsHint": "以下两项只在路由、聚合模式下生效。"
   },
   "geminiConfig": {

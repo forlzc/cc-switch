@@ -1974,6 +1974,10 @@
     "inactiveFieldCopied": "Copied",
     "upstreamFormatCopilotRouteHint": "Every mode requires routing, which injects the Copilot account credentials. A protocol you pick explicitly fails for models that don't support it.",
     "maxOutputTokensWarning": "Don't exceed the real output limit of the model or gateway, or requests return 400.",
+    "modelOverrideTitle": "Write actual request model into model override",
+    "modelOverrideHelp": "When enabled, the model field of the request sent upstream is set to the actual request model of the first row: {{model}}. Only applies to local-proxy (non-Copilot) requests.",
+    "modelOverrideNone": "(not set)",
+    "modelOverrideEmptyHint": "Fill in the actual request model of the first row in the model list above first.",
     "routeOnlySettingsHint": "The two settings below only apply in routing and Aggregation modes."
   },
   "geminiConfig": {
