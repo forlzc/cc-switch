@@ -1,20 +1,23 @@
-# 在 fork 上直接产出一个可安装的 Windows 安装包，并自动发布到 fork 的 Releases。
+# 在 fork 上直接产出一个可安装的 Windows 安装包。
 #
 # 上游的 release.yml 走的是正式发布链路：它要求 TAURI_SIGNING_PRIVATE_KEY
 # （.github/actions/prepare-tauri-signing-key 在 Secret 为空时会直接 exit 1），
 # macOS 那两个 job 还要求 Apple 证书与公证凭据，release job 又挂在需要人工审批的
 # release environment 上。fork 上没有这些 Secrets，那条链路在编译之前就会失败。
-# 这里换成一条只依赖公开 runner 的「编译 + 发布」路径：
+# 这里换成一条只依赖公开 runner 的路径：
 #   关掉 bundle.createUpdaterArtifacts（否则 Tauri 会因缺签名私钥中断打包），
-#   只打 MSI + 便携 exe，构建完成后自动创建一个 GitHub Release 并附上产物。
+#   只打 MSI + 便携 exe。
+#
+# 发布策略：**只有推 fork-v* 标签才会创建 Release**；推分支只做构建，产物留在
+# Actions 的 Artifacts 里，避免每次推送都堆一条 release。
 #   Release 说明取自 .github/release-notes.md（人工维护「本版改了什么」）+ 安装/签名提示。
 #   Release 用 GITHUB_TOKEN 发布，不需要任何签名 / 证书。
 #
-# 怎么触发（本文件位于 fork/build 分支，不在默认分支 main 上）：
-#   1) 打标签：git tag fork-v1 && git push origin fork-v1
+# 怎么用（本文件位于 fork/build 分支，不在默认分支 main 上）：
+#   1) 正式发布：git tag fork-v1 && git push origin fork-v1
 #      或在 GitHub 的 Releases 页面「Draft a new release」里选 fork/build 分支新建 fork-v* 标签。
-#      tag 触发不受“workflow 必须位于默认分支”的限制，是这里的主用方式。
-#   2) 推到 main / fork/build 分支时也会构建。
+#      tag 触发不受“workflow 必须位于默认分支”的限制，是这里唯一的发布方式。
+#   2) 只想验证能否编过：推到 main / fork/build 分支即可（只构建、不发布）。
 #   3) Actions 页里的「Run workflow」按钮只有在默认分支存在该文件时才可用；若需要，
 #      把本文件复制一份到 main 即可（见仓库说明）。
 #
@@ -33,8 +36,8 @@ on:
         description: "Release 标签（留空用 fork-build-<运行号>）"
         required: false
         default: ""
-  # tag 触发：不受“workflow 必须位于默认分支”的限制，在 fork/build 上打 fork-* tag 即可出包。
-  # 分支触发：推到 main / fork/build 时构建。
+  # tag 触发：不受“workflow 必须位于默认分支”的限制，在 fork/build 上打 fork-* tag 即发布。
+  # 分支触发：推到 main / fork/build 时只构建、不发布。
   # 注意：GitHub 对 tag 触发会忽略 paths，所以这里不写 paths，否则 tag 可能不触发。
   push:
     branches: [main, fork/build]
@@ -137,6 +140,7 @@ jobs:
       # 计算 Release 标签：tag 触发用 tag 名，手动触发优先用输入，否则用运行号。
       - name: Resolve release tag
         id: rel
+        if: github.ref_type == 'tag'
         shell: bash
         run: |
           if [ "${{ github.ref_type }}" = "tag" ]; then
@@ -149,7 +153,9 @@ jobs:
 
       # 生成 Release 说明：读取仓库里的 .github/release-notes.md（就是“本版改了什么”），
       # 再补一句安装/签名提示。以后要更新说明，改那个 md 文件即可，不用动本 workflow。
+      # 只在发布（打 tag）时才需要。
       - name: Build release notes
+        if: github.ref_type == 'tag'
         shell: bash
         run: |
           set -euo pipefail
@@ -170,10 +176,11 @@ jobs:
           echo "----- release-notes.md -----"
           cat release-notes.md
 
-      # 这一步才是“能自动 release”的关键：之前只有 upload-artifact，产物停在
-      # workflow 里，fork 的 Releases 页不会出现任何东西。用 GITHUB_TOKEN 直接
-      # 把产物发布成一个 Release；无签名也能发布，只是 SmartScreen 会提示未知发布者。
+      # 发布策略：只有推 fork-v* 标签（github.ref_type == 'tag'）才创建 Release；
+      # 推分支只做构建，产物留在 Actions 的 Artifacts 里。
+      # 用 GITHUB_TOKEN 直接发布；无签名也能发布，只是 SmartScreen 会提示未知发布者。
       - name: Publish release
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.rel.outputs.tag }}
