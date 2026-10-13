@@ -6,7 +6,7 @@
 # release environment 上。fork 上没有这些 Secrets，那条链路在编译之前就会失败。
 # 这里换成一条只依赖公开 runner 的路径：
 #   关掉 bundle.createUpdaterArtifacts（否则 Tauri 会因缺签名私钥中断打包），
-#   只打 MSI + 便携 exe。
+#   打 MSI 安装版，并把便携 exe 压成 zip（和上游正式版一致的 CC-Switch-<版本>-Windows-Portable.zip）。
 #
 # 发布策略：**只有推 fork-v* 标签才会创建 Release**；推分支只做构建，产物留在
 # Actions 的 Artifacts 里，避免每次推送都堆一条 release。
@@ -123,6 +123,18 @@ jobs:
           echo "=== 便携 exe ==="
           ls -la src-tauri/target/release/*.exe 2>/dev/null || echo "(无 exe)"
 
+      # 把便携版 exe 压成 zip（与上游正式版的 Portable.zip 命名一致）。
+      - name: Package portable exe as zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Get-ChildItem src-tauri/target/release/*.exe | Select-Object -First 1
+          if ($null -eq $exe) { throw '未找到便携 exe，无法打包' }
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $dest = "CC-Switch-$version-Windows-Portable.zip"
+          Compress-Archive -Path $exe.FullName -DestinationPath $dest -Force
+          Write-Host ("Portable zip: {0}  ({1:N1} MB)" -f $dest, ((Get-Item $dest).Length / 1MB))
+
       - name: Upload MSI installer
         uses: actions/upload-artifact@v7
         with:
@@ -130,12 +142,12 @@ jobs:
           path: src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
 
-      - name: Upload portable exe
+      - name: Upload portable zip
         uses: actions/upload-artifact@v7
         with:
           name: cc-switch-windows-portable
-          path: src-tauri/target/release/*.exe
-          if-no-files-found: ignore
+          path: CC-Switch-*-Windows-Portable.zip
+          if-no-files-found: error
 
       # 计算 Release 标签：tag 触发用 tag 名，手动触发优先用输入，否则用运行号。
       - name: Resolve release tag
@@ -170,7 +182,7 @@ jobs:
             echo
             echo "---"
             echo
-            echo "自动构建的 Windows 安装包：安装版 \`.msi\`，便携版 \`.exe\`。"
+            echo "自动构建的 Windows 安装包：安装版 \`.msi\`，便携版 \`Portable.zip\`（解压即用）。"
             echo "产物无 Authenticode 签名，Windows SmartScreen 会提示“未知发布者”；应用内自动更新在 fork 上不可用。"
           } > release-notes.md
           echo "----- release-notes.md -----"
@@ -189,6 +201,6 @@ jobs:
           body_path: release-notes.md
           files: |
             src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/*.exe
+            CC-Switch-*-Windows-Portable.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
