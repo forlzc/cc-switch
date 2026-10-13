@@ -1971,6 +1971,10 @@
     "inactiveFieldCopied": "コピーしました",
     "upstreamFormatCopilotRouteHint": "どのモードでもルーティングが必要で、ルーティングが Copilot アカウントの認証情報を注入します。手動指定したプロトコルにモデルが対応していないとエラーになります。",
     "maxOutputTokensWarning": "モデルやゲートウェイの実際の出力上限を超えないでください。超えると 400 が返ります。",
+    "modelOverrideTitle": "実際のリクエストモデルを model 上書きに書き込む",
+    "modelOverrideHelp": "有効にすると、上流へ送るリクエストの model がモデルマッピングの最初の行の実際のリクエストモデルになります：{{model}}。ローカルプロキシ経由（Copilot 以外）のリクエストにのみ適用されます。",
+    "modelOverrideNone": "（未設定）",
+    "modelOverrideEmptyHint": "上のモデル一覧の最初の行の実際のリクエストモデルを先に入力してください。",
     "routeOnlySettingsHint": "以下の二つはルーティングモードと集約モードでのみ有効です。"
   },
   "geminiConfig": {

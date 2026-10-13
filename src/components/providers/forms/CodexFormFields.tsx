@@ -79,6 +79,10 @@ import {
 } from "./FetchedModelPicker";
 import { LocalProxyRequestOverridesField } from "./LocalProxyRequestOverridesField";
 import { cn } from "@/lib/utils";
+import {
+  formatRequestOverrideObject,
+  parseBodyOverrideJson,
+} from "@/lib/requestOverrides";
 import { useCommittableRef } from "@/hooks/useLatestRef";
 import { useModelMetadataFill } from "@/hooks/useModelMetadataFill";
 import { codexPresetModelSources } from "@/config/presetModelMetadata";
@@ -1522,6 +1526,102 @@ export function CodexFormFields({
     </>
   );
 
+  // 模型映射下方：把模型映射第一行（默认模型）的「实际请求模型」写进 Body 覆盖的 model 字段。
+  // 纯前端便捷开关，底层复用 localProxyRequestOverrides.body，不新增后端字段。
+  // 开关状态由 Body 覆盖 JSON 派生（不另存 state），勾选后第一行模型名变化时自动跟随。
+  const firstRowModel = catalogRows[0]?.model?.trim() ?? "";
+  const bodyOverrideModel = parseBodyOverrideJson(localProxyBodyOverride).value
+    ?.model;
+  const modelOverrideChecked =
+    firstRowModel !== "" && bodyOverrideModel === firstRowModel;
+  const modelOverrideDisabled = firstRowModel === "";
+
+  // 改写 Body 覆盖文本框：只增删 model 键，保留 temperature 等其它键。
+  // 解析失败（用户正在录入半截 JSON）时不动文本框，避免把已输入的内容冲掉。
+  const writeModelOverride = useCallback(
+    (next: string | null) => {
+      const parsed = parseBodyOverrideJson(localProxyBodyOverride);
+      if (parsed.error) return;
+      let obj = parsed.value ?? {};
+      if (next === null) {
+        if (!Object.prototype.hasOwnProperty.call(obj, "model")) return;
+        delete obj.model;
+      } else {
+        if (obj.model === next) return;
+        obj = { ...obj, model: next };
+      }
+      onLocalProxyBodyOverrideChange(formatRequestOverrideObject(obj));
+    },
+    [localProxyBodyOverride, onLocalProxyBodyOverrideChange],
+  );
+
+  const handleModelOverrideToggle = useCallback(
+    (next: boolean) => {
+      writeModelOverride(next ? firstRowModel : null);
+    },
+    [firstRowModel, writeModelOverride],
+  );
+
+  // 勾选状态下，第一行模型名一变就跟着改写 Body 覆盖里的 model。
+  // 判据是「覆盖里的 model 仍是上一轮的第一行模型」——说明这个覆盖是开关写进去的、
+  // 还没被手动改过；不能判 modelOverrideChecked，第一行一变它必然为 false，那样永远跟随不了。
+  const prevFirstRowModelRef = useRef(firstRowModel);
+  useEffect(() => {
+    const prev = prevFirstRowModelRef.current;
+    prevFirstRowModelRef.current = firstRowModel;
+    if (!prev || prev === firstRowModel || firstRowModel === "") return;
+    if (parseBodyOverrideJson(localProxyBodyOverride).value?.model !== prev) {
+      return;
+    }
+    writeModelOverride(firstRowModel);
+  }, [firstRowModel, localProxyBodyOverride, writeModelOverride]);
+
+  const modelOverrideCheckbox = isCopilotPreset ? null : (
+    <div className="space-y-2 border-t border-border pt-3">
+      <div className="flex items-center justify-between gap-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-0.5">
+            <FormLabel>
+              {t("codexConfig.modelOverrideTitle", {
+                defaultValue: "将实际请求模型写入 model 覆盖",
+              })}
+            </FormLabel>
+            <HelpTip
+              title={t("codexConfig.modelOverrideTitle", {
+                defaultValue: "将实际请求模型写入 model 覆盖",
+              })}
+            >
+              {t("codexConfig.modelOverrideHelp", {
+                defaultValue:
+                  "勾选后，发给上游的请求体里 model 会被写成模型映射第一行的实际请求模型：{{model}}。仅对走本地代理（非 Copilot）的请求生效。",
+                model:
+                  firstRowModel ||
+                  t("codexConfig.modelOverrideNone", {
+                    defaultValue: "（未填写）",
+                  }),
+              })}
+            </HelpTip>
+          </div>
+          {modelOverrideDisabled && (
+            <p className="text-xs leading-relaxed text-fg-2">
+              {t("codexConfig.modelOverrideEmptyHint", {
+                defaultValue: "请先在上方模型列表填写第一行的实际请求模型。",
+              })}
+            </p>
+          )}
+        </div>
+        <Switch
+          checked={modelOverrideChecked}
+          disabled={modelOverrideDisabled}
+          onCheckedChange={handleModelOverrideToggle}
+          aria-label={t("codexConfig.modelOverrideTitle", {
+            defaultValue: "将实际请求模型写入 model 覆盖",
+          })}
+        />
+      </div>
+    </div>
+  );
+
   // 模型映射 / 模型列表的行。
   const renderCatalogRows = () => (
     <div className="space-y-2">
@@ -1947,6 +2047,7 @@ export function CodexFormFields({
                 })}
               </p>
             )}
+            {modelOverrideCheckbox}
           </div>
         )}
         {defaultModelField}
@@ -2064,6 +2165,7 @@ export function CodexFormFields({
 
           {defaultModelNotInListNotice}
           {catalogRows.length > 0 && renderCatalogRows()}
+          {modelOverrideCheckbox}
         </div>
       )}
 
