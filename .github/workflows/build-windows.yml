@@ -17,6 +17,12 @@ on:
         description: "Tauri --bundles 取值（逗号分隔，可选 msi/nsis）"
         required: false
         default: "msi"
+  # 只在改到本文件时触发：改完打包配置就能立刻出一个包，
+  # 日常推代码不会每次都白跑一遍二十分钟的构建（那种情况用上面的手动触发）。
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-windows.yml"
 
 permissions:
   contents: read
@@ -83,7 +89,8 @@ jobs:
       - name: Build installer
         shell: bash
         env:
-          BUNDLES: ${{ inputs.bundles }}
+          # push 触发时 inputs 是空的，退回默认的 msi
+          BUNDLES: ${{ inputs.bundles || 'msi' }}
         run: pnpm tauri build --bundles "$BUNDLES"
 
       - name: List built artifacts
