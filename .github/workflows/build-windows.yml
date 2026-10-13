@@ -7,6 +7,7 @@
 # 这里换成一条只依赖公开 runner 的「编译 + 发布」路径：
 #   关掉 bundle.createUpdaterArtifacts（否则 Tauri 会因缺签名私钥中断打包），
 #   只打 MSI + 便携 exe，构建完成后自动创建一个 GitHub Release 并附上产物。
+#   Release 说明取自 .github/release-notes.md（人工维护「本版改了什么」）+ 安装/签名提示。
 #   Release 用 GITHUB_TOKEN 发布，不需要任何签名 / 证书。
 #
 # 怎么触发（本文件位于 fork/build 分支，不在默认分支 main 上）：
@@ -146,6 +147,29 @@ jobs:
             echo "tag=fork-build-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           fi
 
+      # 生成 Release 说明：读取仓库里的 .github/release-notes.md（就是“本版改了什么”），
+      # 再补一句安装/签名提示。以后要更新说明，改那个 md 文件即可，不用动本 workflow。
+      - name: Build release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            if [ -f .github/release-notes.md ]; then
+              cat .github/release-notes.md
+            else
+              echo "### 本版改动"
+              echo
+              echo "（未提供说明，请编辑 .github/release-notes.md）"
+            fi
+            echo
+            echo "---"
+            echo
+            echo "自动构建的 Windows 安装包：安装版 \`.msi\`，便携版 \`.exe\`。"
+            echo "产物无 Authenticode 签名，Windows SmartScreen 会提示“未知发布者”；应用内自动更新在 fork 上不可用。"
+          } > release-notes.md
+          echo "----- release-notes.md -----"
+          cat release-notes.md
+
       # 这一步才是“能自动 release”的关键：之前只有 upload-artifact，产物停在
       # workflow 里，fork 的 Releases 页不会出现任何东西。用 GITHUB_TOKEN 直接
       # 把产物发布成一个 Release；无签名也能发布，只是 SmartScreen 会提示未知发布者。
@@ -155,9 +179,7 @@ jobs:
           tag_name: ${{ steps.rel.outputs.tag }}
           name: ${{ steps.rel.outputs.tag }}
           prerelease: true
-          body: |
-            自动构建的 Windows 安装包（无 Authenticode 签名，SmartScreen 会提示未知发布者）。
-            应用内自动更新在 fork 上不可用。
+          body_path: release-notes.md
           files: |
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/*.exe
