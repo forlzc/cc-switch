@@ -1,13 +1,24 @@
-# 在 fork 上直接产出一个可安装的 Windows 安装包。
+# 在 fork 上直接产出一个可安装的 Windows 安装包，并自动发布到 fork 的 Releases。
 #
 # 上游的 release.yml 走的是正式发布链路：它要求 TAURI_SIGNING_PRIVATE_KEY
 # （.github/actions/prepare-tauri-signing-key 在 Secret 为空时会直接 exit 1），
-# macOS 那两个 job 还要求 Apple 证书与公证凭据。fork 上没有这些 Secrets，
-# 所以那条链路在编译之前就会失败。这里换成一条只依赖公开 runner 的打包路径：
+# macOS 那两个 job 还要求 Apple 证书与公证凭据，release job 又挂在需要人工审批的
+# release environment 上。fork 上没有这些 Secrets，那条链路在编译之前就会失败。
+# 这里换成一条只依赖公开 runner 的「编译 + 发布」路径：
 #   关掉 bundle.createUpdaterArtifacts（否则 Tauri 会因缺签名私钥中断打包），
-#   只打 MSI + 便携 exe，产物作为工作流 artifact 上传。
+#   只打 MSI + 便携 exe，构建完成后自动创建一个 GitHub Release 并附上产物。
+#   Release 用 GITHUB_TOKEN 发布，不需要任何签名 / 证书。
 #
-# 注意：产物没有 Authenticode 签名，Windows SmartScreen 会提示未知发布者。
+# 怎么触发（本文件位于 fork/build 分支，不在默认分支 main 上）：
+#   1) 打标签：git tag fork-v1 && git push origin fork-v1
+#      或在 GitHub 的 Releases 页面「Draft a new release」里选 fork/build 分支新建 fork-v* 标签。
+#      tag 触发不受“workflow 必须位于默认分支”的限制，是这里的主用方式。
+#   2) 推到 main / fork/build 分支时也会构建。
+#   3) Actions 页里的「Run workflow」按钮只有在默认分支存在该文件时才可用；若需要，
+#      把本文件复制一份到 main 即可（见仓库说明）。
+#
+# 注意：产物没有 Authenticode 签名，Windows SmartScreen 会提示未知发布者；
+# 因为没有 updater 签名，fork 上的应用内自动更新不可用。这两点都不影响发布。
 name: Build Windows Installer
 
 on:
@@ -17,15 +28,22 @@ on:
         description: "Tauri --bundles 取值（逗号分隔，可选 msi/nsis）"
         required: false
         default: "msi"
-  # 只在改到本文件时触发：改完打包配置就能立刻出一个包，
-  # 日常推代码不会每次都白跑一遍二十分钟的构建（那种情况用上面的手动触发）。
+      tag:
+        description: "Release 标签（留空用 fork-build-<运行号>）"
+        required: false
+        default: ""
+  # tag 触发：不受“workflow 必须位于默认分支”的限制，在 fork/build 上打 fork-* tag 即可出包。
+  # 分支触发：推到 main / fork/build 时构建。
+  # 注意：GitHub 对 tag 触发会忽略 paths，所以这里不写 paths，否则 tag 可能不触发。
   push:
-    branches: [main]
-    paths:
-      - ".github/workflows/build-windows.yml"
+    branches: [main, fork/build]
+    tags:
+      - "fork-v*"
 
+# 创建 Release 需要写权限；仓库 Settings → Actions → General 里也要选
+# "Read and write permissions"，否则 GITHUB_TOKEN 无权创建 Release。
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: build-windows-${{ github.ref }}
@@ -114,3 +132,34 @@ jobs:
           name: cc-switch-windows-portable
           path: src-tauri/target/release/*.exe
           if-no-files-found: ignore
+
+      # 计算 Release 标签：tag 触发用 tag 名，手动触发优先用输入，否则用运行号。
+      - name: Resolve release tag
+        id: rel
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ inputs.tag }}" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=fork-build-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 这一步才是“能自动 release”的关键：之前只有 upload-artifact，产物停在
+      # workflow 里，fork 的 Releases 页不会出现任何东西。用 GITHUB_TOKEN 直接
+      # 把产物发布成一个 Release；无签名也能发布，只是 SmartScreen 会提示未知发布者。
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.rel.outputs.tag }}
+          name: ${{ steps.rel.outputs.tag }}
+          prerelease: true
+          body: |
+            自动构建的 Windows 安装包（无 Authenticode 签名，SmartScreen 会提示未知发布者）。
+            应用内自动更新在 fork 上不可用。
+          files: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
