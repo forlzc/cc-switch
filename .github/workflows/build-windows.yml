@@ -1,0 +1,206 @@
+# 在 fork 上直接产出一个可安装的 Windows 安装包。
+#
+# 上游的 release.yml 走的是正式发布链路：它要求 TAURI_SIGNING_PRIVATE_KEY
+# （.github/actions/prepare-tauri-signing-key 在 Secret 为空时会直接 exit 1），
+# macOS 那两个 job 还要求 Apple 证书与公证凭据，release job 又挂在需要人工审批的
+# release environment 上。fork 上没有这些 Secrets，那条链路在编译之前就会失败。
+# 这里换成一条只依赖公开 runner 的路径：
+#   关掉 bundle.createUpdaterArtifacts（否则 Tauri 会因缺签名私钥中断打包），
+#   打 MSI 安装版，并把便携 exe 压成 zip（和上游正式版一致的 CC-Switch-<版本>-Windows-Portable.zip）。
+#
+# 发布策略：**只有推 fork-v* 标签才会创建 Release**；推分支只做构建，产物留在
+# Actions 的 Artifacts 里，避免每次推送都堆一条 release。
+#   Release 说明取自 .github/release-notes.md（人工维护「本版改了什么」）+ 安装/签名提示。
+#   Release 用 GITHUB_TOKEN 发布，不需要任何签名 / 证书。
+#
+# 怎么用（本文件位于 fork/build 分支，不在默认分支 main 上）：
+#   1) 正式发布：git tag fork-v1 && git push origin fork-v1
+#      或在 GitHub 的 Releases 页面「Draft a new release」里选 fork/build 分支新建 fork-v* 标签。
+#      tag 触发不受“workflow 必须位于默认分支”的限制，是这里唯一的发布方式。
+#   2) 只想验证能否编过：推到 main / fork/build 分支即可（只构建、不发布）。
+#   3) Actions 页里的「Run workflow」按钮只有在默认分支存在该文件时才可用；若需要，
+#      把本文件复制一份到 main 即可（见仓库说明）。
+#
+# 注意：产物没有 Authenticode 签名，Windows SmartScreen 会提示未知发布者；
+# 因为没有 updater 签名，fork 上的应用内自动更新不可用。这两点都不影响发布。
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundles:
+        description: "Tauri --bundles 取值（逗号分隔，可选 msi/nsis）"
+        required: false
+        default: "msi"
+      tag:
+        description: "Release 标签（留空用 fork-build-<运行号>）"
+        required: false
+        default: ""
+  # tag 触发：不受“workflow 必须位于默认分支”的限制，在 fork/build 上打 fork-* tag 即发布。
+  # 分支触发：推到 main / fork/build 时只构建、不发布。
+  # 注意：GitHub 对 tag 触发会忽略 paths，所以这里不写 paths，否则 tag 可能不触发。
+  push:
+    branches: [main, fork/build]
+    tags:
+      - "fork-v*"
+
+# 创建 Release 需要写权限；仓库 Settings → Actions → General 里也要选
+# "Read and write permissions"，否则 GITHUB_TOKEN 无权创建 Release。
+permissions:
+  contents: write
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Windows Installer
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      # rust-toolchain.toml 是编译器版本的唯一来源，和 CI / Release 保持一致
+      - name: Read pinned Rust toolchain
+        id: rust-toolchain
+        shell: bash
+        run: |
+          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+
+      # 只缓存依赖：本仓库的 crate 每次都要重编，缓存它只会让缓存变大、恢复变慢
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: installer
+
+      - name: Setup pnpm
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+        run: |
+          corepack enable
+          corepack install
+          node --version
+          pnpm --version
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      # fork 上没有 TAURI_SIGNING_PRIVATE_KEY，关掉 updater 产物生成，
+      # 否则 Tauri 会因为找不到签名私钥而中断打包。
+      # 只改 runner 上的检出文件，不动仓库里的 src-tauri/tauri.conf.json。
+      - name: Disable updater artifacts (no signing key on this fork)
+        shell: bash
+        run: |
+          node -e "const fs=require('fs');const p='src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));c.bundle.createUpdaterArtifacts=false;fs.writeFileSync(p,JSON.stringify(c,null,2));"
+          node -e "const c=require('./src-tauri/tauri.conf.json');console.log('createUpdaterArtifacts =',c.bundle.createUpdaterArtifacts);"
+
+      - name: Build installer
+        shell: bash
+        env:
+          # push 触发时 inputs 是空的，退回默认的 msi
+          BUNDLES: ${{ inputs.bundles || 'msi' }}
+        run: pnpm tauri build --bundles "$BUNDLES"
+
+      - name: List built artifacts
+        shell: bash
+        run: |
+          echo "=== bundle/msi ==="
+          ls -la src-tauri/target/release/bundle/msi/ 2>/dev/null || echo "(无 msi 目录)"
+          echo "=== 便携 exe ==="
+          ls -la src-tauri/target/release/*.exe 2>/dev/null || echo "(无 exe)"
+
+      # 把便携版 exe 压成 zip（与上游正式版的 Portable.zip 命名一致）。
+      - name: Package portable exe as zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Get-ChildItem src-tauri/target/release/*.exe | Select-Object -First 1
+          if ($null -eq $exe) { throw '未找到便携 exe，无法打包' }
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $dest = "CC-Switch-$version-Windows-Portable.zip"
+          Compress-Archive -Path $exe.FullName -DestinationPath $dest -Force
+          Write-Host ("Portable zip: {0}  ({1:N1} MB)" -f $dest, ((Get-Item $dest).Length / 1MB))
+
+      - name: Upload MSI installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: cc-switch-windows-msi
+          path: src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+
+      - name: Upload portable zip
+        uses: actions/upload-artifact@v7
+        with:
+          name: cc-switch-windows-portable
+          path: CC-Switch-*-Windows-Portable.zip
+          if-no-files-found: error
+
+      # 计算 Release 标签：tag 触发用 tag 名，手动触发优先用输入，否则用运行号。
+      - name: Resolve release tag
+        id: rel
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ inputs.tag }}" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=fork-build-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 生成 Release 说明：读取仓库里的 .github/release-notes.md（就是“本版改了什么”），
+      # 再补一句安装/签名提示。以后要更新说明，改那个 md 文件即可，不用动本 workflow。
+      # 只在发布（打 tag）时才需要。
+      - name: Build release notes
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            if [ -f .github/release-notes.md ]; then
+              cat .github/release-notes.md
+            else
+              echo "### 本版改动"
+              echo
+              echo "（未提供说明，请编辑 .github/release-notes.md）"
+            fi
+            echo
+            echo "---"
+            echo
+            echo "自动构建的 Windows 安装包：安装版 \`.msi\`，便携版 \`Portable.zip\`（解压即用）。"
+            echo "产物无 Authenticode 签名，Windows SmartScreen 会提示“未知发布者”；应用内自动更新在 fork 上不可用。"
+          } > release-notes.md
+          echo "----- release-notes.md -----"
+          cat release-notes.md
+
+      # 发布策略：只有推 fork-v* 标签（github.ref_type == 'tag'）才创建 Release；
+      # 推分支只做构建，产物留在 Actions 的 Artifacts 里。
+      # 用 GITHUB_TOKEN 直接发布；无签名也能发布，只是 SmartScreen 会提示未知发布者。
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.rel.outputs.tag }}
+          name: ${{ steps.rel.outputs.tag }}
+          prerelease: true
+          body_path: release-notes.md
+          files: |
+            src-tauri/target/release/bundle/msi/*.msi
+            CC-Switch-*-Windows-Portable.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
